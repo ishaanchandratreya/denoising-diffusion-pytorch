@@ -24,12 +24,103 @@ import numpy as np
 from tqdm.auto import tqdm
 from denoising_diffusion_pytorch.version import __version__
 import wandb
+import matplotlib.pyplot as plt
+from io import BytesIO
+from PIL import Image
+from matplotlib.colors import Normalize
 
 # constants
 
 ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start"])
 
 # helpers functions
+
+
+def plot_discrete(all_samples, all_conditions):
+
+    # plot all samples on a 2D grid
+    x = all_samples[:, 0].cpu().numpy()
+    y = all_samples[:, 1].cpu().numpy()
+    all_conditions = list(all_conditions[:, 0].cpu().numpy())
+    colors = ["red", "blue", "green", "yellow", "purple", "orange"]
+
+    plt.figure(figsize=(6, 4))
+    plt.xlim(-1, 1)  # Set x-axis limits to include negative and positive values
+    plt.ylim(-1, 1)  # Set y-axis limits to include negative and positive values
+    plt.scatter(
+        x,
+        y,
+        c=[colors[each] for each in all_conditions],
+        label="Samples",
+    )
+    plt.grid(True)
+
+    # Save the plot to a BytesIO object
+    buffer = BytesIO()
+    plt.savefig(buffer, format="png")
+    buffer.seek(0)
+
+    # Log the plot to wandb
+    wandb.log({"samples": wandb.Image(Image.open(buffer))})
+
+
+def plot_continuous(all_samples, all_conditions):
+
+    # plot all samples on a 2D grid
+    x = all_samples[:, 0].cpu().numpy()
+    y = all_samples[:, 1].cpu().numpy()
+    all_conditions = all_conditions[:, 0].cpu().numpy()
+
+    plt.figure(figsize=(6, 4))
+    plt.xlim(-3, 3)  # Set x-axis limits to include negative and positive values
+    plt.ylim(-3, 3)  # Set y-axis limits to include negative and positive values
+    norm = Normalize(vmin=-2, vmax=2)
+    plt.scatter(
+        x,
+        y,
+        c=all_conditions,
+        norm=norm,
+        cmap="viridis",
+        label="Samples",
+    )
+    plt.grid(True)
+
+    # Save the plot to a BytesIO object
+    buffer = BytesIO()
+    plt.savefig(buffer, format="png")
+    buffer.seek(0)
+
+    # Log the plot to wandb
+    wandb.log({"samples": wandb.Image(Image.open(buffer))})
+
+
+def plot_unconditional():
+
+    assert self.channels >= 2
+    # plot all samples on a 2D grid
+    x = all_samples[:, 0].cpu().numpy()
+    y = all_samples[:, 1].cpu().numpy()
+    all_conditions = list(all_conditions[:, 0].cpu().numpy())
+    colors = ["red", "blue", "green", "yellow", "purple", "orange"]
+
+    plt.figure(figsize=(6, 4))
+    plt.xlim(-1, 1)  # Set x-axis limits to include negative and positive values
+    plt.ylim(-1, 1)  # Set y-axis limits to include negative and positive values
+    plt.scatter(
+        x,
+        y,
+        c=[colors[each] for each in all_conditions],
+        label="Samples",
+    )
+    plt.grid(True)
+
+    # Save the plot to a BytesIO object
+    buffer = BytesIO()
+    plt.savefig(buffer, format="png")
+    buffer.seek(0)
+
+    # Log the plot to wandb
+    wandb.log({"samples": wandb.Image(Image.open(buffer))})
 
 
 def exists(x):
@@ -830,7 +921,7 @@ class EBMFactoredDiffusionModel(nn.Module):
         cond_y_dim,
         num_conds=None,
         widen=2,
-        normalize=True,
+        normalize=False,
     ):
         super().__init__()
         self.n_layers = n_layers
@@ -1520,7 +1611,7 @@ class ConditionalGaussianDiffusionSimple(Module):
         return ModelPrediction(pred_noise, x_start)
 
     def p_mean_variance(
-        self, x, sample_x_cond, t, x_self_cond=None, clip_denoised=True
+        self, x, sample_x_cond, t, x_self_cond=None, clip_denoised=False
     ):
         preds = self.model_predictions(x, sample_x_cond, t, x_self_cond)
         x_start = preds.pred_x_start
@@ -1534,7 +1625,7 @@ class ConditionalGaussianDiffusionSimple(Module):
         return model_mean, posterior_variance, posterior_log_variance, x_start
 
     @torch.no_grad()
-    def p_sample(self, x, sample_x_cond, t: int, x_self_cond=None, clip_denoised=True):
+    def p_sample(self, x, sample_x_cond, t: int, x_self_cond=None, clip_denoised=False):
         b, *_, device = *x.shape, x.device
         batched_times = torch.full((b,), t, device=x.device, dtype=torch.long)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
@@ -1705,10 +1796,10 @@ class ConditionalGaussianDiffusionSimple(Module):
         given_tensor = self.normalize(given_tensor)
 
         # check if cond is a FloatTensor or LongTensor
-        if not given_cond.dtype == torch.int64:
-            raise NotImplementedError(
-                "cond must be a for now LongTensor but modify normalization here if that changes"
-            )
+        # if not given_cond.dtype == torch.int64:
+        #     raise NotImplementedError(
+        #         "cond must be a for now LongTensor but modify normalization here if that changes"
+        #     )
 
         return self.p_losses(given_tensor, given_cond, t, *args, **kwargs)
 
@@ -1909,6 +2000,42 @@ class TrainerSimple(object):
                                 gen_samples[1] for gen_samples in all_generated_list
                             ]
 
+                            all_samples = torch.cat(all_samples_list, dim=0)
+                            all_conditions = torch.cat(all_conditions_list, dim=0)
+                            plot_discrete(all_samples, all_conditions)
+
+                        elif self.conditional_sampling == "continuous":
+
+                            y_min = self.dl.dataset.cond_min
+                            y_max = self.dl.dataset.cond_max
+                            range_ = y_max - y_min
+
+                            all_generated_list = list(
+                                map(
+                                    lambda n: self.ema.ema_model.sample(
+                                        batch_size=n,
+                                        sample_x_cond=(
+                                            range_ * torch.rand((n, 1)) + y_min
+                                        )
+                                        .to(torch.float32)
+                                        .to(device),
+                                    ),
+                                    batches,
+                                )
+                            )
+
+                            # uniform torch sample
+
+                            all_samples_list = [
+                                gen_samples[0] for gen_samples in all_generated_list
+                            ]
+                            all_conditions_list = [
+                                gen_samples[1] for gen_samples in all_generated_list
+                            ]
+
+                            all_samples = torch.cat(all_samples_list, dim=0)
+                            all_conditions = torch.cat(all_conditions_list, dim=0)
+                            plot_continuous(all_samples, all_conditions)
                         else:
                             all_samples_list = list(
                                 map(
@@ -1921,48 +2048,9 @@ class TrainerSimple(object):
                                 for each in all_samples_list
                             ]
 
-                    all_samples = torch.cat(all_samples_list, dim=0)
-                    all_conditions = torch.cat(all_conditions_list, dim=0)
-
-                    assert self.channels >= 2
-                    # plot all samples on a 2D grid
-                    x = all_samples[:, 0].cpu().numpy()
-                    y = all_samples[:, 1].cpu().numpy()
-                    all_conditions = list(all_conditions[:, 0].cpu().numpy())
-                    colors = ["red", "blue", "green", "yellow", "purple", "orange"]
-                    import matplotlib.pyplot as plt
-                    from io import BytesIO
-                    from PIL import Image
-
-                    plt.figure(figsize=(6, 4))
-                    plt.xlim(
-                        -1, 1
-                    )  # Set x-axis limits to include negative and positive values
-                    plt.ylim(
-                        -1, 1
-                    )  # Set y-axis limits to include negative and positive values
-                    plt.scatter(
-                        x,
-                        y,
-                        c=[colors[each] for each in all_conditions],
-                        label="Samples",
-                    )
-                    plt.grid(True)
-
-                    # Save the plot to a BytesIO object
-                    buffer = BytesIO()
-                    plt.savefig(buffer, format="png")
-                    buffer.seek(0)
-
-                    # Log the plot to wandb
-                    wandb.log({"samples": wandb.Image(Image.open(buffer))})
-
-                    # torch.save(
-                    #     all_samples,
-                    #     str(self.results_folder / f"sample-{milestone}.png"),
-                    # )
-                    # self.save(milestone)
-
+                            all_samples = torch.cat(all_samples_list, dim=0)
+                            all_conditions = torch.cat(all_conditions_list, dim=0)
+                            plot_unconditional(all_samples, all_conditions)
             epoch_loss /= len(self.dl)
             print(f"Epoch {epoch}: Loss {epoch_loss}")
             min_loss = min(min_loss, epoch_loss)
